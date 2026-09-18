@@ -1,6 +1,6 @@
 [package]
 authors = ["Ballerina"]
-distribution = "2201.12.0"
+distribution = "2201.13.4"
 keywords = ["Agent", "Model", "Provider", "Vendor/DeepSeek", "Area/AI & Machine Learning", "Type/Model Provider", "Type/Connector", "Name/Deepseek Model Provider"]
 license = ["Apache-2.0"]
 icon="icon.png"
@@ -10,11 +10,10 @@ repository = "https://github.com/ballerina-platform/module-ballerinax-ai.deepsee
 version = "1.1.4"
 
 # TODO: Remove this block before merging.
-# The streaming API (`ai:ChatCompletionChunk`, `ModelProvider.chatStream`) is not in any
-# published `ballerina/ai` release yet; it exists only in the local build of the
+# The streaming API (`ai:ChatMessageChunk`, `ModelProvider.chatAsStream`/`generateAsStream`) is
+# not in any published `ballerina/ai` release yet; it exists only in the local build of the
 # `feat/add-chat-stream-support` branch of module-ballerina-ai. Once that lands and is
-# released (at a version above the published 1.14.1), drop `repository = "local"` and let
-# this resolve from central.
+# released, drop `repository = "local"` and let this resolve from central.
 [[dependency]]
 org = "ballerina"
 name = "ai"

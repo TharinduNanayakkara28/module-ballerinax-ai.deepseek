@@ -1,6 +1,6 @@
 [package]
 authors = ["Ballerina"]
-distribution = "2201.12.0"
+distribution = "2201.13.4"
 keywords = ["Agent", "Model", "Provider", "Vendor/DeepSeek", "Area/AI & Machine Learning", "Type/Model Provider", "Type/Connector", "Name/Deepseek Model Provider"]
 license = ["Apache-2.0"]
 icon="icon.png"
@@ -8,6 +8,17 @@ name = "ai.deepseek"
 org = "ballerinax"
 repository = "https://github.com/ballerina-platform/module-ballerinax-ai.deepseek"
 version = "@toml.version@"
+
+# TODO: Remove this block before merging.
+# The streaming API (`ai:ChatMessageChunk`, `ModelProvider.chatAsStream`/`generateAsStream`) is
+# not in any published `ballerina/ai` release yet; it exists only in the local build of the
+# `feat/add-chat-stream-support` branch of module-ballerina-ai. Once that lands and is
+# released, drop `repository = "local"` and let this resolve from central.
+[[dependency]]
+org = "ballerina"
+name = "ai"
+version = "1.13.0"
+repository = "local"
 
 [platform.java21]
 graalvmCompatible = true

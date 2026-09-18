@@ -97,7 +97,7 @@ type DeepseekChatResponseToolCall record {
 // The `deepseek-reasoner` model also returns a `reasoning_content` field here, but it is
 // deliberately not mapped: `ai:ChatAssistantMessage` is a closed record with nowhere to
 // carry it, so `chat` cannot surface it. Reasoning reaches callers only on the streaming
-// path, where `ai:ChatCompletionChunkDelta` has a `reasoning` field - see
+// path, where `ai:ChatMessageChunk` has a `reasoning` field - see
 // `DeepSeekChatChunkDelta`.
 type DeepseekChatResponseMessage record {
     string role;
@@ -211,8 +211,6 @@ type DeepSeekChatTopLogprob record {
 
 # The incremental delta for a streamed choice
 type DeepSeekChatChunkDelta record {
-    # Role of the author, sent only on the first delta (typically "assistant")
-    string role?;
     # Text content chunk of the final answer
     string? content = ();
     # Chain-of-thought reasoning chunk (deepseek-reasoner only); streamed before `content`
@@ -309,76 +307,60 @@ type DeepSeekStreamOptions record {|
 
 // ── Wire → normalized mapping ──────────────────────────────────────────────
 // Projects a DeepSeek `chat.completion.chunk` (the streaming wire types above)
-// onto the normalized `ai:ChatCompletionChunk` that `chatStream` must return.
+// onto the normalized `ai:ChatMessageChunk` that `chatAsStream` must return.
 // Only the subset the `ai` type can hold is mapped; everything else is ignored.
 
-# Maps a DeepSeek wire chunk onto the normalized `ai:ChatCompletionChunk`.
+# Maps a DeepSeek wire chunk onto the normalized `ai:ChatMessageChunk`.
 # Forwards tool calls on every chunk (not just the first) so argument fragments
-# stream through correctly, and maps `reasoning_content` onto `delta.reasoning`.
+# stream through correctly, and maps `reasoning_content` onto `reasoning`.
 #
 # + w - The parsed DeepSeek wire chunk
-# + return - The normalized chunk consumed by the `ai` module
-isolated function toAiChunk(DeepSeekChatCompletionChunk w) returns ai:ChatCompletionChunk {
-    ai:ChatCompletionChunkChoice[] choices = [];
-    foreach DeepSeekChatChunkChoice c in w.choices {
-        ai:ChatCompletionChunkDelta delta = {content: c.delta.content};
-        ai:ROLE? role = mapRole(c.delta?.role);
-        if role is ai:ROLE {
-            delta.role = role;
-        }
-        string? reasoning = c.delta?.reasoning_content;
-        if reasoning is string {
-            delta.reasoning = reasoning;
-        }
-        DeepSeekChunkToolCall[]? wireToolCalls = c.delta?.tool_calls;
-        if wireToolCalls is DeepSeekChunkToolCall[] {
-            ai:ToolCallChunk[] toolCalls = [];
-            foreach DeepSeekChunkToolCall t in wireToolCalls {
-                ai:ToolCallChunk toolCall = {index: t.index};
-                string? id = t?.id;
-                if id is string {
-                    toolCall.id = id;
-                }
-                DeepSeekChunkToolCallFunction? fn = t?.'function;
-                if fn is DeepSeekChunkToolCallFunction {
-                    ai:FunctionCallChunk functionFragment = {};
-                    string? name = fn?.name;
-                    if name is string {
-                        functionFragment.name = name;
-                    }
-                    string? arguments = fn?.arguments;
-                    if arguments is string {
-                        functionFragment.arguments = arguments;
-                    }
-                    toolCall.'function = functionFragment;
-                }
-                toolCalls.push(toolCall);
+# + return - The mapped chunk, or `()` when the event carries nothing for the
+# caller (no choices, or a chunk with no content, reasoning, tool calls or finish reason)
+isolated function toAiChunk(DeepSeekChatCompletionChunk w) returns ai:ChatMessageChunk? {
+    DeepSeekChatChunkChoice[] choices = w.choices;
+    if choices.length() == 0 {
+        return ();
+    }
+    DeepSeekChatChunkChoice c = choices[0];
+    string? content = c.delta.content == "" ? () : c.delta.content;
+    string? reasoning = c.delta?.reasoning_content == "" ? () : c.delta?.reasoning_content;
+
+    ai:ToolCallChunk[]? toolCalls = ();
+    DeepSeekChunkToolCall[]? wireToolCalls = c.delta?.tool_calls;
+    if wireToolCalls is DeepSeekChunkToolCall[] {
+        ai:ToolCallChunk[] mappedToolCalls = [];
+        foreach DeepSeekChunkToolCall t in wireToolCalls {
+            ai:ToolCallChunk toolCall = {index: t.index};
+            string? id = t?.id;
+            if id is string {
+                toolCall.id = id;
             }
-            delta.toolCalls = toolCalls;
+            DeepSeekChunkToolCallFunction? fn = t?.'function;
+            if fn is DeepSeekChunkToolCallFunction {
+                string? name = fn?.name;
+                if name is string {
+                    toolCall.name = name;
+                }
+                string? arguments = fn?.arguments;
+                if arguments is string {
+                    toolCall.arguments = arguments;
+                }
+            }
+            mappedToolCalls.push(toolCall);
         }
-        choices.push({index: c.index, delta, finishReason: mapFinishReason(c.finish_reason)});
+        toolCalls = mappedToolCalls;
     }
 
-    ai:ChatCompletionChunk chunk = {choices};
+    ai:FinishReason? finishReason = mapFinishReason(c.finish_reason);
+    if content is () && reasoning is () && toolCalls is () && finishReason is () {
+        return ();
+    }
+
+    ai:ChatMessageChunk chunk = {role: ai:ASSISTANT, content, reasoning, toolCalls, finishReason};
     string? id = w?.id;
     if id is string {
         chunk.id = id;
-    }
-    string? model = w?.model;
-    if model is string {
-        chunk.model = model;
-    }
-    DeepSeekUsage? usage = w.usage;
-    if usage is DeepSeekUsage {
-        ai:CompletionTokenUsage tokenUsage = {
-            promptTokens: usage.prompt_tokens,
-            completionTokens: usage.completion_tokens
-        };
-        int? totalTokens = usage.total_tokens;
-        if totalTokens is int {
-            tokenUsage.totalTokens = totalTokens;
-        }
-        chunk.usage = tokenUsage;
     }
     return chunk;
 }
@@ -404,29 +386,6 @@ isolated function extractStreamErrorFrame(json payload) returns string? {
         }
     }
     return failure.toJsonString();
-}
-
-# Safely maps a DeepSeek role string onto the `ai:ROLE` enum; returns `()` for
-# absent or unrecognized values rather than panicking on a cast.
-#
-# + role - The role string from the wire delta
-# + return - The mapped `ai:ROLE`, or `()` when absent/unrecognized
-isolated function mapRole(string? role) returns ai:ROLE? {
-    // Streamed response deltas only carry the "assistant" role; "system"/"user"
-    // are handled for completeness. ("function" is request-only and the `ai`
-    // enum member is not accessible here, so it is intentionally omitted.)
-    match role {
-        "system" => {
-            return ai:SYSTEM;
-        }
-        "user" => {
-            return ai:USER;
-        }
-        "assistant" => {
-            return ai:ASSISTANT;
-        }
-    }
-    return ();
 }
 
 # Safely maps a DeepSeek finish reason onto the `ai:FinishReason` enum. Returns
